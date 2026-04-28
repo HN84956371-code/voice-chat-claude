@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+*.mp3
+*.wav
+.env
+*.egg-info/
+dist/
+build/
+語音對話.bat
+voice_chat_manual.docx
+gen_manual.py
