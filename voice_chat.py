@@ -10,6 +10,7 @@ import tempfile
 import os
 import sys
 import re
+import time
 import speech_recognition as sr
 import edge_tts
 import pygame
@@ -53,27 +54,53 @@ except ImportError:
     pass
 
 
+def _english_ratio(text):
+    if not text:
+        return 0
+    ascii_letters = sum(1 for c in text if c.isascii() and c.isalpha())
+    return ascii_letters / len(text)
+
 def listen(recognizer, mic):
     p("\n========== Speak now! ==========")
     with mic as source:
         try:
-            audio = recognizer.listen(source, timeout=15, phrase_time_limit=60)
+            audio = recognizer.listen(source, timeout=15, phrase_time_limit=90)
         except sr.WaitTimeoutError:
             return None
 
+    t0 = time.time()
     p("[Recognizing...]")
-    if USE_WHISPER:
-        try:
-            return recognizer.recognize_whisper(audio, model="base", language="zh")
-        except Exception as e:
-            p(f"[Whisper error: {e}, trying Google...]")
+
+    zh_text = None
     try:
-        return recognizer.recognize_google(audio, language="zh-TW")
+        zh_text = recognizer.recognize_google(audio, language="zh-TW")
+    except sr.UnknownValueError:
+        pass
+    except sr.RequestError as e:
+        p(f"[STT error: {e}]")
+        return None
+    p(f"[Google STT: {time.time()-t0:.1f}s]")
+
+    if zh_text and _english_ratio(zh_text) > 0.1 and USE_WHISPER:
+        t1 = time.time()
+        p(f"[EN ratio {_english_ratio(zh_text):.0%}, Whisper re-checking...]")
+        try:
+            en_text = recognizer.recognize_whisper(audio, model="base", language="en")
+            if en_text and en_text.strip():
+                p(f"[Whisper EN: {en_text.strip()} ({time.time()-t1:.1f}s)]")
+                return f"{zh_text}（英文部分：{en_text.strip()}）"
+        except Exception as e:
+            p(f"[Whisper fallback failed: {e}]")
+
+    if zh_text:
+        return zh_text
+
+    try:
+        return recognizer.recognize_google(audio, language="en-US")
     except sr.UnknownValueError:
         p("[Could not recognize, try again]")
         return None
-    except sr.RequestError as e:
-        p(f"[STT error: {e}]")
+    except sr.RequestError:
         return None
 
 import shutil
@@ -90,14 +117,31 @@ def _find_claude_cmd():
     return "claude"
 
 CLAUDE_CMD = _find_claude_cmd()
-PROJECT_DIR = os.environ.get("VOICE_CHAT_PROJECT_DIR", os.getcwd())
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR = os.environ.get("VOICE_CHAT_PROJECT_DIR",
+                             os.path.join(_script_dir, "voice_project"))
 
+VOICE_MODEL = os.environ.get("VOICE_CHAT_MODEL", "claude-opus-4-6")
 
 def ask_claude(text):
-    cmd = [CLAUDE_CMD, "-p", text, "--output-format", "text"]
-    result = subprocess.run(cmd, capture_output=True, timeout=120, shell=True, cwd=PROJECT_DIR)
-    out = result.stdout.decode("utf-8", errors="replace").strip()
-    return out
+    cmd = [CLAUDE_CMD, "-p", text, "--output-format", "text",
+           "--model", VOICE_MODEL]
+    startupinfo = None
+    if sys.platform == "win32":
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    t0 = time.time()
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, timeout=180,
+            shell=True, cwd=PROJECT_DIR, startupinfo=startupinfo
+        )
+        out = result.stdout.decode("utf-8", errors="replace").strip()
+        p(f"[Claude replied in {time.time()-t0:.1f}s]")
+        return out
+    except subprocess.TimeoutExpired:
+        p(f"[Claude timed out after {time.time()-t0:.0f}s]")
+        return "抱歉，回覆超時了，請再說一次或簡化問題。"
 
 TTS_MAX_CHARS = 100
 
@@ -149,20 +193,41 @@ def main():
     ambient = recognizer.energy_threshold
     recognizer.energy_threshold = ambient * 0.8
     recognizer.dynamic_energy_threshold = True
-    recognizer.pause_threshold = 2.0
-    stt_engine = "Whisper (base)" if USE_WHISPER else "Google STT"
+    recognizer.pause_threshold = 2.5
+    recognizer.non_speaking_duration = 1.5
+    recognizer.phrase_threshold = 0.3
+    stt_engine = "Google zh-TW + Whisper EN fallback" if USE_WHISPER else "Google STT (zh+en)"
     p(f"[Ambient: {ambient:.0f}, Threshold: {recognizer.energy_threshold:.0f}, STT: {stt_engine}]")
+    p(f"[Pause: {recognizer.pause_threshold}s | Model: {VOICE_MODEL}]")
 
     pygame.mixer.init()
 
     p("\n[Ready! Say '等等' to switch to text input]")
+    p("[Auto text mode after 3 silent rounds]")
+
+    silent_count = 0
+    MAX_SILENT = 3
 
     while True:
         try:
             text = listen(recognizer, mic)
             if text is None:
-                p("[No speech detected, listening again...]")
-                continue
+                silent_count += 1
+                p(f"[No speech detected ({silent_count}/{MAX_SILENT})]")
+                if silent_count >= MAX_SILENT:
+                    p("\n[Auto switching to text mode — you seem away]")
+                    typed = text_input_mode()
+                    silent_count = 0
+                    if typed is None:
+                        p("[Back to voice mode]")
+                        speak("好，繼續說")
+                        continue
+                    p(f"\n[Text input]: {typed}")
+                    text = typed
+                else:
+                    continue
+            else:
+                silent_count = 0
 
             p(f"\nYou: {text}")
 
@@ -183,7 +248,9 @@ def main():
                 text = typed
 
             p("[Claude thinking...]")
+            t_claude = time.time()
             reply = ask_claude(text)
+            p(f"[Claude replied in {time.time()-t_claude:.1f}s]")
             if not reply:
                 p("[No reply]")
                 continue

@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [],
+    "deny": [],
+    "defaultMode": "acceptEdits"
+  },
+  "model": "claude-opus-4-6",
+  "enabledPlugins": {},
+  "language": "繁體中文"
+}
