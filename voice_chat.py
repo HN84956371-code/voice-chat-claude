@@ -1,5 +1,5 @@
 """
-Voice Chat with Claude v3.2
+Voice Chat with Claude v3.2.1
 Double-click start.bat to start
 Say '等等' / '打字' / '暫停' to pause and switch to text input mode
 """
@@ -17,7 +17,7 @@ import edge_tts
 import pygame
 
 TTS_VOICE = "zh-TW-HsiaoChenNeural"
-SENTENCE_END = re.compile(r'(?<=[。！？!?\n])')
+SENTENCE_END = re.compile(r'(?<=[。！？!?.\n])')
 COMMA_SPLIT = re.compile(r'(?<=[，、；,;])')
 TTS_CHUNK_MAX = 200
 QUIT_RE = re.compile(r'結束|離開|退出|關閉|\b(bye|exit|quit)\b', re.I)
@@ -98,9 +98,10 @@ def listen(recognizer, mic):
         return None
     p(f"[Google STT: {time.time()-t0:.1f}s]")
 
-    if zh_text and _english_ratio(zh_text) > 0.1 and USE_WHISPER:
+    en_ratio = _english_ratio(zh_text) if zh_text else 0
+    if zh_text and en_ratio > 0.35 and USE_WHISPER:
         t1 = time.time()
-        p(f"[EN ratio {_english_ratio(zh_text):.0%}, Whisper re-checking...]")
+        p(f"[EN ratio {en_ratio:.0%}, Whisper re-checking...]")
         try:
             en_text = recognizer.recognize_whisper(audio, model="base", language="en")
             if en_text and en_text.strip():
@@ -280,7 +281,6 @@ def _play_tts_chunk(cleaned, idx):
 
 
 def ask_and_speak_stream(text):
-    t0 = time.time()
     reply = ask_claude(text)
     stop_thinking_cue()
     if not reply:
@@ -299,7 +299,17 @@ def ask_and_speak_stream(text):
         if len(cleaned) > TTS_CHUNK_MAX:
             subs = [s for s in COMMA_SPLIT.split(cleaned) if s.strip()]
             if not subs:
-                subs = [cleaned[:TTS_CHUNK_MAX]]
+                subs = [cleaned[i:i+TTS_CHUNK_MAX]
+                        for i in range(0, len(cleaned), TTS_CHUNK_MAX)]
+            else:
+                expanded = []
+                for s in subs:
+                    if len(s) > TTS_CHUNK_MAX:
+                        expanded.extend(s[i:i+TTS_CHUNK_MAX]
+                                        for i in range(0, len(s), TTS_CHUNK_MAX))
+                    else:
+                        expanded.append(s)
+                subs = expanded
         else:
             subs = [cleaned]
         for sub in subs:
@@ -325,7 +335,7 @@ def ask_and_speak_stream(text):
 
 def main():
     p("=" * 50)
-    p("  Voice Chat with Claude v3.2")
+    p("  Voice Chat with Claude v3.2.1")
     p("  Sentence TTS + Haiku speed")
     p("  Say 'bye' or Ctrl+C to stop")
     p("  Say '等等'/'打字'/'暫停' to type/paste")
@@ -359,6 +369,7 @@ def main():
 
     while True:
         try:
+            from_typing = False
             text = listen(recognizer, mic)
             if text is None:
                 silent_count += 1
@@ -373,6 +384,7 @@ def main():
                         continue
                     p(f"\n[Text input]: {typed}")
                     text = typed
+                    from_typing = True
                 else:
                     continue
             else:
@@ -380,12 +392,12 @@ def main():
 
             p(f"\nYou: {text}")
 
-            if QUIT_RE.search(text):
+            if not from_typing and len(text) <= 10 and QUIT_RE.search(text):
                 p("\nBye!")
                 speak("掰掰，下次再聊！")
                 break
 
-            if PAUSE_RE.search(text):
+            if not from_typing and len(text) <= 10 and PAUSE_RE.search(text):
                 speak("好，你打字給我看")
                 typed = text_input_mode()
                 if typed is None:
@@ -394,6 +406,7 @@ def main():
                     continue
                 p(f"\n[Text input]: {typed}")
                 text = typed
+                from_typing = True
 
             play_thinking_cue()
             p("[Claude thinking...]")
