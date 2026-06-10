@@ -1,7 +1,7 @@
 """
-Voice Chat with Claude v3.1
-Double-click 語音對話.bat to start
-Say '等等' to pause and switch to text input mode
+Voice Chat with Claude v3.2
+Double-click start.bat to start
+Say '等等' / '打字' / '暫停' to pause and switch to text input mode
 """
 
 import subprocess
@@ -21,7 +21,18 @@ SENTENCE_END = re.compile(r'(?<=[。！？!?\n])')
 COMMA_SPLIT = re.compile(r'(?<=[，、；,;])')
 TTS_CHUNK_MAX = 200
 QUIT_RE = re.compile(r'結束|離開|退出|關閉|\b(bye|exit|quit)\b', re.I)
-PAUSE_RE = re.compile(r'等等|暫停|等一下|停一下|\b(pause|wait)\b', re.I)
+PAUSE_RE = re.compile(
+    r'等等|暫停|等一下|停一下|等一等|停一停|打字|用打的|文字模式|我要貼|貼上'
+    r'|\b(pause|wait|type|text)\b', re.I)
+
+VOICE_SYSTEM_PROMPT = (
+    "[語音對話模式] 你的回覆會被 TTS 朗讀出來。規則："
+    "1) 絕對不要用 emoji 或表情符號（👏😄❤️等全部禁止）"
+    "2) 不要用 Markdown 格式（不要用 **粗體**、# 標題、- 列表）"
+    "3) 用口語化的繁體中文，像在跟朋友聊天一樣"
+    "4) 想表達開心就說「哈哈」，想鼓掌就說「太棒了」，用語氣詞不用符號"
+    "5) 回覆簡潔有重點，適合用聽的，不要太長"
+)
 
 def p(msg):
     print(msg, flush=True)
@@ -144,10 +155,11 @@ def _make_startupinfo():
 def ask_claude(text):
     cmd = [CLAUDE_CMD, "-p", "--output-format", "text",
            "--model", VOICE_MODEL]
+    prompt = VOICE_SYSTEM_PROMPT + "\n\n" + text
     t0 = time.time()
     try:
         result = subprocess.run(
-            cmd, input=text.encode("utf-8"), capture_output=True,
+            cmd, input=prompt.encode("utf-8"), capture_output=True,
             timeout=180, cwd=PROJECT_DIR, startupinfo=_make_startupinfo()
         )
         if result.returncode != 0:
@@ -172,7 +184,15 @@ def _split_sentences(text):
 
 # ── TTS ─────────────────────────────────────────────────────
 
+_EMOJI_RE = re.compile(
+    "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+    "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF"
+    "\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF"
+    "\U0000FE00-\U0000FE0F\U0000200D]+")
+
+
 def clean_for_tts(text):
+    text = _EMOJI_RE.sub('', text)
     text = re.sub(r'\|[^\n]*\|', '', text)
     text = re.sub(r'-{3,}', '', text)
     text = re.sub(r'#{1,6}\s*', '', text)
@@ -305,9 +325,10 @@ def ask_and_speak_stream(text):
 
 def main():
     p("=" * 50)
-    p("  Voice Chat with Claude v3.1")
+    p("  Voice Chat with Claude v3.2")
     p("  Sentence TTS + Haiku speed")
     p("  Say 'bye' or Ctrl+C to stop")
+    p("  Say '等等'/'打字'/'暫停' to type/paste")
     p("=" * 50)
 
     recognizer = sr.Recognizer()
@@ -330,7 +351,7 @@ def main():
     pygame.mixer.init()
     _ensure_thinking_cue()
 
-    p("\n[Ready! Say 'wait' to switch to text input]")
+    p("\n[Ready! Say '等等'/'打字'/'暫停' to switch to text input]")
     p("[Auto text mode after 3 silent rounds]")
 
     silent_count = 0
