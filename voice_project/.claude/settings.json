@@ -4,7 +4,7 @@
     "deny": [],
     "defaultMode": "acceptEdits"
   },
-  "model": "claude-opus-4-6",
+  "model": "claude-haiku-4-5-20251001",
   "enabledPlugins": {},
   "language": "繁體中文"
 }

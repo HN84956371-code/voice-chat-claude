@@ -3,3 +3,4 @@ PyAudio>=0.2.14
 edge-tts>=6.1
 pygame>=2.5
 openai-whisper>=20231117
+soundfile>=0.12

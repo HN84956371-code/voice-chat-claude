@@ -86,7 +86,7 @@ After submitting, Claude replies and you're back in voice mode.
 
 | Environment variable | Default | Description |
 |---------------------|---------|-------------|
-| `VOICE_CHAT_PROJECT_DIR` | Current directory | Working directory for Claude CLI (determines which project memory is loaded) |
+| `VOICE_CHAT_PROJECT_DIR` | `voice_project/` | Working directory for Claude CLI (determines which project memory is loaded) |
 | `VOICE_CHAT_MODEL` | `claude-haiku-4-5-20251001` | Claude model (can override to opus/sonnet) |
 
 ### Tunable constants in `voice_chat.py`

@@ -87,7 +87,7 @@ Windows 使用者也可以雙擊 `start.bat` 啟動。
 
 | 環境變數 | 預設值 | 說明 |
 |---------|-------|------|
-| `VOICE_CHAT_PROJECT_DIR` | 當前目錄 | Claude CLI 的工作目錄（決定載入哪個專案的記憶） |
+| `VOICE_CHAT_PROJECT_DIR` | `voice_project/` | Claude CLI 的工作目錄（決定載入哪個專案的記憶） |
 | `VOICE_CHAT_MODEL` | `claude-haiku-4-5-20251001` | Claude 模型（可改為 opus/sonnet） |
 
 ### 可調整的程式常數（在 `voice_chat.py` 中）
