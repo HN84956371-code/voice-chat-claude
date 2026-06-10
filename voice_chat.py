@@ -1,9 +1,7 @@
 """
-Voice Chat with Claude v3.0 — streaming edition
+Voice Chat with Claude v3.1
 Double-click 語音對話.bat to start
 Say '等等' to pause and switch to text input mode
-
-v3.0: Haiku for speed, thinking cue, sentence-by-sentence streaming TTS
 """
 
 import subprocess
@@ -19,9 +17,11 @@ import edge_tts
 import pygame
 
 TTS_VOICE = "zh-TW-HsiaoChenNeural"
-PAUSE_WORDS = ["等等", "暫停", "等一下", "停一下", "pause", "wait"]
 SENTENCE_END = re.compile(r'(?<=[。！？!?\n])')
+COMMA_SPLIT = re.compile(r'(?<=[，、；,;])')
 TTS_CHUNK_MAX = 200
+QUIT_RE = re.compile(r'結束|離開|退出|關閉|\b(bye|exit|quit)\b', re.I)
+PAUSE_RE = re.compile(r'等等|暫停|等一下|停一下|\b(pause|wait)\b', re.I)
 
 def p(msg):
     print(msg, flush=True)
@@ -128,6 +128,7 @@ CLAUDE_CMD = _find_claude_cmd()
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.environ.get("VOICE_CHAT_PROJECT_DIR",
                              os.path.join(_script_dir, "voice_project"))
+os.makedirs(PROJECT_DIR, exist_ok=True)
 
 VOICE_MODEL = os.environ.get("VOICE_CHAT_MODEL", "claude-haiku-4-5-20251001")
 
@@ -141,20 +142,27 @@ def _make_startupinfo():
 
 
 def ask_claude(text):
-    cmd = [CLAUDE_CMD, "-p", text, "--output-format", "text",
+    cmd = [CLAUDE_CMD, "-p", "--output-format", "text",
            "--model", VOICE_MODEL]
     t0 = time.time()
     try:
         result = subprocess.run(
-            cmd, capture_output=True, timeout=180,
-            shell=True, cwd=PROJECT_DIR, startupinfo=_make_startupinfo()
+            cmd, input=text.encode("utf-8"), capture_output=True,
+            timeout=180, cwd=PROJECT_DIR, startupinfo=_make_startupinfo()
         )
+        if result.returncode != 0:
+            err = result.stderr.decode("utf-8", errors="replace").strip()
+            p(f"[Claude CLI error {result.returncode}: {err[:300]}]")
+            return ""
         out = result.stdout.decode("utf-8", errors="replace").strip()
         p(f"[Claude replied in {time.time()-t0:.1f}s]")
         return out
+    except FileNotFoundError:
+        p("[claude CLI not found]")
+        return ""
     except subprocess.TimeoutExpired:
         p(f"[Claude timed out after {time.time()-t0:.0f}s]")
-        return "Sorry, timed out. Please try again or simplify the question."
+        return ""
 
 
 def _split_sentences(text):
@@ -179,26 +187,32 @@ def clean_for_tts(text):
 
 
 def _run_tts_to_file(text, output_path, rate="+0%"):
-    loop = asyncio.new_event_loop()
-    try:
-        loop.run_until_complete(
-            edge_tts.Communicate(text, TTS_VOICE, rate=rate).save(output_path)
-        )
-    finally:
-        loop.close()
+    asyncio.run(
+        edge_tts.Communicate(text, TTS_VOICE, rate=rate).save(output_path)
+    )
 
 
-_THINKING_CUE_PATH = os.path.join(tempfile.gettempdir(), "claude_thinking_cue.mp3")
+_PID = os.getpid()
+_THINKING_CUE_PATH = os.path.join(tempfile.gettempdir(),
+                                   f"claude_thinking_cue_{_PID}.mp3")
 
 
 def _ensure_thinking_cue():
-    if not os.path.exists(_THINKING_CUE_PATH):
-        p("[Generating thinking cue...]")
-        _run_tts_to_file("嗯…讓我想想", _THINKING_CUE_PATH, rate="+10%")
+    if os.path.exists(_THINKING_CUE_PATH) and os.path.getsize(_THINKING_CUE_PATH) > 0:
+        return
+    p("[Generating thinking cue...]")
+    try:
+        tmp = _THINKING_CUE_PATH + ".tmp"
+        _run_tts_to_file("嗯…讓我想想", tmp, rate="+10%")
+        os.replace(tmp, _THINKING_CUE_PATH)
+    except Exception as e:
+        p(f"[Thinking cue failed (non-fatal): {e}]")
 
 
 def play_thinking_cue():
     try:
+        if not os.path.exists(_THINKING_CUE_PATH):
+            return
         pygame.mixer.music.load(_THINKING_CUE_PATH)
         pygame.mixer.music.play()
     except Exception:
@@ -221,7 +235,8 @@ def speak(text):
             return
         if len(cleaned) > TTS_CHUNK_MAX:
             cleaned = cleaned[:TTS_CHUNK_MAX]
-        tmp = os.path.join(tempfile.gettempdir(), "claude_voice_reply.mp3")
+        tmp = os.path.join(tempfile.gettempdir(),
+                           f"claude_voice_reply_{_PID}.mp3")
         pygame.mixer.music.unload()
         _run_tts_to_file(cleaned, tmp)
         pygame.mixer.music.load(tmp)
@@ -233,35 +248,48 @@ def speak(text):
         p(f"[TTS error: {e}]")
 
 
+def _play_tts_chunk(cleaned, idx):
+    tmp = os.path.join(tempfile.gettempdir(),
+                       f"claude_chunk_{_PID}_{idx % 2}.mp3")
+    _run_tts_to_file(cleaned, tmp)
+    while pygame.mixer.music.get_busy():
+        pygame.time.wait(50)
+    pygame.mixer.music.unload()
+    pygame.mixer.music.load(tmp)
+    pygame.mixer.music.play()
+
+
 def ask_and_speak_stream(text):
     t0 = time.time()
     reply = ask_claude(text)
+    stop_thinking_cue()
     if not reply:
-        stop_thinking_cue()
         return ""
 
-    stop_thinking_cue()
+    p(f"\nClaude: {reply}\n")
+
     sentences = _split_sentences(reply)
     p(f"[Speaking {len(sentences)} chunks]")
 
-    for idx, sentence in enumerate(sentences):
+    idx = 0
+    for sentence in sentences:
         cleaned = clean_for_tts(sentence)
         if not cleaned:
             continue
         if len(cleaned) > TTS_CHUNK_MAX:
-            cleaned = cleaned[:TTS_CHUNK_MAX]
-        try:
-            tmp = os.path.join(tempfile.gettempdir(),
-                               f"claude_chunk_{idx % 2}.mp3")
-            while pygame.mixer.music.get_busy():
-                pygame.time.wait(50)
-            pygame.mixer.music.unload()
-
-            _run_tts_to_file(cleaned, tmp)
-            pygame.mixer.music.load(tmp)
-            pygame.mixer.music.play()
-        except Exception as e:
-            p(f"[TTS chunk error: {e}]")
+            subs = [s for s in COMMA_SPLIT.split(cleaned) if s.strip()]
+            if not subs:
+                subs = [cleaned[:TTS_CHUNK_MAX]]
+        else:
+            subs = [cleaned]
+        for sub in subs:
+            if not sub.strip():
+                continue
+            try:
+                _play_tts_chunk(sub.strip(), idx)
+                idx += 1
+            except Exception as e:
+                p(f"[TTS chunk error: {e}]")
 
     while pygame.mixer.music.get_busy():
         pygame.time.wait(100)
@@ -277,8 +305,8 @@ def ask_and_speak_stream(text):
 
 def main():
     p("=" * 50)
-    p("  Voice Chat with Claude v3.0")
-    p("  Streaming TTS + Haiku speed")
+    p("  Voice Chat with Claude v3.1")
+    p("  Sentence TTS + Haiku speed")
     p("  Say 'bye' or Ctrl+C to stop")
     p("=" * 50)
 
@@ -289,7 +317,6 @@ def main():
     with mic as source:
         recognizer.adjust_for_ambient_noise(source, duration=2)
     ambient = recognizer.energy_threshold
-    recognizer.energy_threshold = ambient * 0.8
     recognizer.dynamic_energy_threshold = True
     recognizer.pause_threshold = 1.2
     recognizer.non_speaking_duration = 1.0
@@ -332,13 +359,12 @@ def main():
 
             p(f"\nYou: {text}")
 
-            quit_words = ["結束", "離開", "退出", "關閉", "bye", "exit", "quit"]
-            if any(w in text.lower() for w in quit_words):
+            if QUIT_RE.search(text):
                 p("\nBye!")
                 speak("掰掰，下次再聊！")
                 break
 
-            if any(w in text for w in PAUSE_WORDS):
+            if PAUSE_RE.search(text):
                 speak("好，你打字給我看")
                 typed = text_input_mode()
                 if typed is None:
@@ -356,11 +382,9 @@ def main():
             p(f"[Total: {time.time()-t0:.1f}s]")
 
             if not reply:
-                stop_thinking_cue()
                 p("[No reply]")
                 continue
 
-            p(f"\nClaude: {reply}\n")
             p("[Back to voice mode]")
 
         except KeyboardInterrupt:
