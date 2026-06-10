@@ -13,9 +13,6 @@ import os
 import sys
 import re
 import time
-import json
-import threading
-import queue
 import shutil
 import speech_recognition as sr
 import edge_tts
@@ -143,54 +140,6 @@ def _make_startupinfo():
     return None
 
 
-def _extract_stream_text(data):
-    if data.get("type") == "assistant" and isinstance(data.get("content"), str):
-        return data["content"]
-    if data.get("type") == "content_block_delta":
-        return data.get("delta", {}).get("text", "")
-    if isinstance(data.get("delta"), dict):
-        return data["delta"].get("text", "")
-    if isinstance(data.get("text"), str):
-        return data["text"]
-    return ""
-
-
-def _claude_stream_sentences(text):
-    cmd = [CLAUDE_CMD, "-p", text, "--output-format", "stream-json",
-           "--model", VOICE_MODEL]
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        shell=True, cwd=PROJECT_DIR, startupinfo=_make_startupinfo()
-    )
-
-    buffer = ""
-    for raw_line in proc.stdout:
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        chunk = _extract_stream_text(data)
-        if not chunk:
-            continue
-
-        buffer += chunk
-        parts = SENTENCE_END.split(buffer)
-        if len(parts) > 1:
-            for part in parts[:-1]:
-                if part.strip():
-                    yield part
-            buffer = parts[-1]
-
-    if buffer.strip():
-        yield buffer.strip()
-
-    proc.wait()
-
-
 def ask_claude(text):
     cmd = [CLAUDE_CMD, "-p", text, "--output-format", "text",
            "--model", VOICE_MODEL]
@@ -206,6 +155,11 @@ def ask_claude(text):
     except subprocess.TimeoutExpired:
         p(f"[Claude timed out after {time.time()-t0:.0f}s]")
         return "Sorry, timed out. Please try again or simplify the question."
+
+
+def _split_sentences(text):
+    parts = SENTENCE_END.split(text)
+    return [s for s in parts if s.strip()]
 
 
 # ── TTS ─────────────────────────────────────────────────────
@@ -280,70 +234,43 @@ def speak(text):
 
 
 def ask_and_speak_stream(text):
-    sentence_q = queue.Queue()
-    full_parts = []
-
-    def tts_worker():
-        idx = 0
-        first = True
-        while True:
-            try:
-                sentence = sentence_q.get(timeout=120)
-            except queue.Empty:
-                break
-            if sentence is None:
-                break
-
-            cleaned = clean_for_tts(sentence)
-            if not cleaned:
-                continue
-            if len(cleaned) > TTS_CHUNK_MAX:
-                cleaned = cleaned[:TTS_CHUNK_MAX]
-
-            try:
-                if first:
-                    stop_thinking_cue()
-                    first = False
-
-                tmp = os.path.join(tempfile.gettempdir(),
-                                   f"claude_chunk_{idx % 2}.mp3")
-                idx += 1
-
-                while pygame.mixer.music.get_busy():
-                    pygame.time.wait(50)
-                pygame.mixer.music.unload()
-
-                _run_tts_to_file(cleaned, tmp)
-                pygame.mixer.music.load(tmp)
-                pygame.mixer.music.play()
-            except Exception as e:
-                p(f"[TTS chunk error: {e}]")
-
-        while pygame.mixer.music.get_busy():
-            pygame.time.wait(100)
-        try:
-            pygame.mixer.music.unload()
-        except Exception:
-            pass
-
-    worker = threading.Thread(target=tts_worker, daemon=True)
-    worker.start()
-
     t0 = time.time()
-    sentence_count = 0
-    for sentence in _claude_stream_sentences(text):
-        full_parts.append(sentence)
-        sentence_q.put(sentence)
-        sentence_count += 1
-        if sentence_count == 1:
-            p(f"[First sentence in {time.time()-t0:.1f}s]")
+    reply = ask_claude(text)
+    if not reply:
+        stop_thinking_cue()
+        return ""
 
-    p(f"[Claude done in {time.time()-t0:.1f}s, {sentence_count} chunks]")
+    stop_thinking_cue()
+    sentences = _split_sentences(reply)
+    p(f"[Speaking {len(sentences)} chunks]")
 
-    sentence_q.put(None)
-    worker.join(timeout=120)
+    for idx, sentence in enumerate(sentences):
+        cleaned = clean_for_tts(sentence)
+        if not cleaned:
+            continue
+        if len(cleaned) > TTS_CHUNK_MAX:
+            cleaned = cleaned[:TTS_CHUNK_MAX]
+        try:
+            tmp = os.path.join(tempfile.gettempdir(),
+                               f"claude_chunk_{idx % 2}.mp3")
+            while pygame.mixer.music.get_busy():
+                pygame.time.wait(50)
+            pygame.mixer.music.unload()
 
-    return "".join(full_parts)
+            _run_tts_to_file(cleaned, tmp)
+            pygame.mixer.music.load(tmp)
+            pygame.mixer.music.play()
+        except Exception as e:
+            p(f"[TTS chunk error: {e}]")
+
+    while pygame.mixer.music.get_busy():
+        pygame.time.wait(100)
+    try:
+        pygame.mixer.music.unload()
+    except Exception:
+        pass
+
+    return reply
 
 
 # ── Main ────────────────────────────────────────────────────
